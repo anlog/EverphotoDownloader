@@ -1,0 +1,5 @@
+include ':utils'
+
+//includeBuild 'utils'
+//apply from: 'utils/settings.gradle'
+//project(':utils_lint').projectDir = new File(rootDir, 'utils/utils_lint')
