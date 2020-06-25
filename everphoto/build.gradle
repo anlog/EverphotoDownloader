@@ -1,0 +1,33 @@
+allprojects {
+    repositories {
+        google()
+        jcenter()
+    }
+}
+
+apply plugin: 'java-library'
+apply plugin: 'kotlin'
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+
+    implementation project(':utils')
+
+    implementation 'io.reactivex.rxjava3:rxjava:3.0.4'
+    implementation 'com.squareup.retrofit2:adapter-rxjava3:2.9.0'
+//    implementation "com.squareup.okhttp 3:okhttp:4.7.2"
+//    implementation("com.squareup.okhttp3:logging-interceptor:4.7.2")
+    implementation("com.squareup.okhttp3:logging-interceptor:3.14.9")
+    implementation 'com.squareup.retrofit2:retrofit:2.9.0'
+
+//    implementation 'com.squareup.retrofit2:converter-moshi:2.9.0'
+//    implementation 'com.squareup.moshi:moshi:1.9.3'
+
+    implementation 'com.squareup.retrofit2:converter-gson:2.9.0'
+    implementation 'com.google.code.gson:gson:2.8.6'
+
+}
+
+sourceCompatibility = JavaVersion.VERSION_1_8
+targetCompatibility = JavaVersion.VERSION_1_8
