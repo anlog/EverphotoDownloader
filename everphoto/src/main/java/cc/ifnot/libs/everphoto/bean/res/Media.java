@@ -34,6 +34,7 @@ public class Media extends Base {
     public static class MediaList {
         private long id;
         private long status;
+        private boolean deleted;
         private String created_at;
         private String taken;
         private String token;
@@ -41,6 +42,10 @@ public class Media extends Base {
         private String size;
         private String md5;
         private String format; // jpg or video
+
+        public boolean isDeleted() {
+            return deleted;
+        }
 
         public long getId() {
             return id;

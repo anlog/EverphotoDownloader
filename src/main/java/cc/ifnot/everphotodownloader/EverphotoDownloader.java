@@ -7,16 +7,17 @@ import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 
+import java.util.concurrent.CountDownLatch;
+
+import cc.ifnot.libs.everphoto.EverPhoto;
 import cc.ifnot.libs.utils.Lg;
+import io.reactivex.rxjava3.annotations.NonNull;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 
 public class EverphotoDownloader {
 
     private Options options;
-    private boolean verbose;
-    private String mobile;
-    private String password;
-    private String smsCode;
-    private String outDir;
 
     public static void main(String[] args) {
         new EverphotoDownloader().init(args);
@@ -49,6 +50,11 @@ public class EverphotoDownloader {
                 .hasArg(true).optionalArg(false).build();
         options.addOption(out);
 
+        final Option threadsCount = Option.builder("t").longOpt("thread-count")
+                .argName("thread count").desc("the thread amount to download")
+                .hasArg(true).optionalArg(false).build();
+        options.addOption(threadsCount);
+
         final DefaultParser parser = new DefaultParser();
         try {
             final CommandLine cmd = parser.parse(options, args);
@@ -58,6 +64,11 @@ public class EverphotoDownloader {
                 }
                 printHelp();
             } else {
+
+                if (cmd.getOptions().length == 0) {
+                    printHelp();
+                    return;
+                }
                 if (cmd.hasOption("V")) {
                     printVersion();
                     return;
@@ -66,13 +77,20 @@ public class EverphotoDownloader {
                     return;
                 }
 
+                boolean verbose = false;
+                String mobile;
+                String password;
+                String smsCode;
+                String outDir;
+                int threads;
+
                 if (cmd.hasOption("v")) {
                     verbose = true;
                 }
 
                 mobile = cmd.getOptionValue("u");
                 if (mobile == null || mobile.length() == 0) {
-                    Lg.e("user of %s is invalid", user);
+                    Lg.e("user of %s is invalid", mobile);
                     printHelp();
                     return;
                 }
@@ -90,7 +108,60 @@ public class EverphotoDownloader {
                     Lg.w("out is not offered, will use current out");
                     outDir = "out";
                 }
-                // todo job
+
+                String threadsValue = cmd.getOptionValue("o");
+                threads = Runtime.getRuntime()
+                        .availableProcessors() + 1;
+                if (threadsValue == null || threadsValue.length() == 0) {
+                    Lg.w("threads is not offered, will use default %d", threads);
+                } else {
+                    try {
+                        threads = Integer.parseInt(threadsValue);
+                    } catch (Exception ignored) {
+                    }
+                }
+
+                CountDownLatch latch = new CountDownLatch(1);
+                @NonNull final Disposable disposable = EverPhoto.INSTANCE.setVerbose(verbose)
+                        .setMobile(mobile)
+                        .setPassword(password)
+                        .setOut(outDir)
+                        .setThreadCount(threads)
+                        .setSmsCode(smsCode)
+                        .doDownload().observeOn(Schedulers.io())
+                        .subscribe(s -> {
+                                    Lg.d("ED: %s", s);
+                                    latch.countDown();
+                                }
+                                , throwable -> {
+                                    Lg.d(throwable);
+                                    latch.countDown();
+                                });
+                while (!disposable.isDisposed()) {
+                    try {
+                        latch.await();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    } finally {
+                        if (!disposable.isDisposed()) {
+                            ThreadGroup currentGroup =
+                                    Thread.currentThread().getThreadGroup();
+                            int noThreads = currentGroup.activeCount();
+                            Thread[] lstThreads = new Thread[noThreads];
+                            currentGroup.enumerate(lstThreads);
+                            for (int i = 0; i < noThreads; i++) {
+                                if (lstThreads[i] != null &&
+                                        lstThreads[i].getName().contains("pool")) {
+                                    try {
+                                        lstThreads[i].join();
+                                    } catch (InterruptedException e) {
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    //wait
+                }
             }
 
         } catch (ParseException e) {
@@ -100,6 +171,7 @@ public class EverphotoDownloader {
     }
 
     private void printVersion() {
+        System.out.println();
         System.out.println(String.format("%s%s v%s", EDConfig.NAME,
                 EDConfig.DEBUG <= Lg.DEBUG ? "-debug" : "",
                 EDConfig.VERSION));

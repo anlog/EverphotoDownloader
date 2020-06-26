@@ -1,20 +1,28 @@
 package cc.ifnot.libs.everphoto;
 
+import com.google.gson.Gson;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
-import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
+import cc.ifnot.libs.everphoto.bean.res.Base;
 import cc.ifnot.libs.everphoto.bean.res.Media;
 import cc.ifnot.libs.everphoto.bean.res.URITemp;
 import cc.ifnot.libs.everphoto.bean.res.User;
@@ -23,8 +31,8 @@ import cc.ifnot.libs.utils.MD5;
 import io.reactivex.rxjava3.annotations.NonNull;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.ObservableSource;
-import io.reactivex.rxjava3.disposables.Disposable;
-import io.reactivex.rxjava3.functions.Consumer;
+import io.reactivex.rxjava3.core.Observer;
+import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.functions.Function;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import okhttp3.Headers;
@@ -46,40 +54,29 @@ import retrofit2.converter.gson.GsonConverterFactory;
 public enum EverPhoto {
     INSTANCE;
 
+    private static final ThreadLocal<SimpleDateFormat> threadLocal = new
+            ThreadLocal<SimpleDateFormat>();
+    private static final int BUF_SIZE = 1024 * 1024;
     private static EverPhotoService evs;
-
     private static String token;
-
-    private static SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+    private static OkHttpClient okHttpClient;
 
     static {
-        OkHttpClient client = new OkHttpClient.Builder()
+        okHttpClient = new OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+//                .protocols(Collections.singletonList(Protocol.HTTP_1_1))
                 .addInterceptor(new Interceptor() {
                     @Override
                     public Response intercept(Chain chain) throws IOException {
                         Request original = chain.request();
 
-//                        Host:api.everphoto.cn
-//                        x-api-version:20161221
-//                        user-agent:EverPhoto/2.7.4 (Android;2742;MI 8;29;wandoujia)
-//                        x-device-mac:02:00:00:00:00:00
-//                        application:tc.everphoto
-//                        authorization:Bearer -ULF8SGLsaWeXmQFWlenVBjt
-//                        x-locked:1
-//                        x-device-id:1046385102960840
-//                        device_id:1046385102960840
-//                        x-install-id:1503781941153038
-//                        x-device-uuid:3d9327b9-7fec-4e1c-a963-4730b5a31a68
-//                        x-request-uuid:85d82fb1-8190-417f-a87e-23e6b51659ac
-//                        x-uid:6840573484490294286
-//                        x-timestamp-ms:1592697574626
-                        // Request customization: add request headers
-//                        authorization:Bearer -ULF8SGLsaWeXmQFWlenVBjt
                         Map<String, String> ch = new HashMap<>();
-                        ch.put("Host", original.url().host().contains("media") ?
-                                "media.everphoto.cn" : "api.everphoto.cn");
+//                        ch.put("Host", original.url().host().contains("media") ?
+//                                "media.everphoto.cn" : "api.everphoto.cn");
                         ch.put("x-api-version", "20161221");
-                        ch.put("user-agen", "EverPhoto/2.7.4 (Android;2742;MI 8;29;wandoujia)");
+                        ch.put("user-agent", "EverPhoto/2.7.4 (Android;2742;MI 8;29;wandoujia)");
                         ch.put("x-device-mac", "02:00:00:00:00:00");
                         ch.put("application", "tc.everphoto");
                         ch.put("x-device-id", "1046385102960840");
@@ -95,13 +92,12 @@ public enum EverPhoto {
                         Request request = requestBuilder.build();
                         return chain.proceed(request);
                     }
-                })
-                .addInterceptor(new HttpLoggingInterceptor()
-                        .setLevel(HttpLoggingInterceptor.Level.BODY))
+                }).addInterceptor(new HttpLoggingInterceptor()
+                        .setLevel(HttpLoggingInterceptor.Level.NONE))
                 .build();
         Retrofit retrofit = new Retrofit.Builder()
                 .baseUrl("https://api.everphoto.cn")
-                .client(client)
+                .client(okHttpClient)
                 .addConverterFactory(GsonConverterFactory.create())
                 .addCallAdapterFactory(RxJava3CallAdapterFactory.create())
                 .build();
@@ -114,159 +110,310 @@ public enum EverPhoto {
     String out;
     boolean verbose;
 
-    public void setMobile(String mobile) {
+    boolean isDone = false;
+    private @NonNull Scheduler downloadSchedulers = Schedulers.from(
+            Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() + 1));
+
+    public EverPhoto setMobile(String mobile) {
         this.mobile = mobile;
+        return this;
     }
 
-    public void setPassword(String password) {
+    public EverPhoto setPassword(String password) {
         this.password = password;
+        return this;
     }
 
-    public void setSmsCode(String smsCode) {
+    public EverPhoto setSmsCode(String smsCode) {
         this.smsCode = smsCode;
+        return this;
     }
 
-    public void setOut(String out) {
+    public EverPhoto setOut(String out) {
         this.out = out;
+        return this;
     }
 
-    public void setVerbose(boolean verbose) {
+    public EverPhoto setThreadCount(int threads) {
+        downloadSchedulers = Schedulers.from(Executors.newFixedThreadPool(threads));
+        return this;
+    }
+
+    public EverPhoto setVerbose(boolean verbose) {
         this.verbose = verbose;
+        if (verbose) {
+            Lg.level(Lg.MORE);
+            for (Interceptor i : okHttpClient.interceptors()) {
+                if (i instanceof HttpLoggingInterceptor) {
+                    ((HttpLoggingInterceptor) i).setLevel(HttpLoggingInterceptor.Level.BODY);
+                }
+            }
+        }
+        return this;
     }
 
-    void doDownload() {
-        @NonNull final Disposable disposable = evs.login("+86" + mobile.replace("+86", ""), MD5.toHexString(MD5.md5(
-                ("tc.everphoto." + password).getBytes())))
+    public Observable<String> doDownload() {
+        return Observable.fromCallable(new Callable<User>() {
+            @Override
+            public User call() throws Exception {
+
+                if (out != null && out.length() > 0) {
+                    final File f = new File(out);
+                    if (!f.isDirectory()) {
+                        f.delete();
+                    }
+                    if (!f.exists()) {
+                        f.mkdirs();
+                    }
+                    final File tk = new File(f, ".token");
+                    if (tk.exists() && tk.length() > 0) {
+                        byte[] tkbuf = new byte[1024];
+                        try (final FileInputStream fis = new FileInputStream(tk)) {
+                            final int read = fis.read(tkbuf);
+                            token = new String(tkbuf, 0, read);
+                            Lg.w("read cached token from %s", tk.getAbsolutePath());
+                            return new User(token);
+                        }
+                    }
+                }
+
+                Lg.d("do login");
+                @NonNull final User user = evs.login("+86" + mobile.replace("+86", ""), MD5.toHexString(MD5.md5(
+                        ("tc.everphoto." + password).getBytes()))).blockingSingle();
+                token = user.getData().getToken();
+                if (token != null && token.length() > 0) {
+                    if (out != null && out.length() > 0) {
+                        final File f = new File(out);
+                        if (!f.isDirectory()) {
+                            f.delete();
+                        }
+                        if (!f.exists()) {
+                            f.mkdirs();
+                        }
+                        final File tk = new File(f, ".token");
+                        if (tk.exists()) {
+                            tk.delete();
+                        }
+                        byte[] tkbuf = new byte[1024];
+                        try (final FileOutputStream fos = new FileOutputStream(tk)) {
+                            fos.write(token.getBytes(), 0, token.length());
+                            Lg.w("write token to %s", tk.getAbsolutePath());
+                        }
+
+                    }
+                }
+                return user;
+            }
+        }).observeOn(Schedulers.io())
                 .flatMap(new Function<User, Observable<URITemp>>() {
                     @Override
                     public Observable<URITemp> apply(User user) throws Throwable {
-                        Schedulers.io().scheduleDirect(new Runnable() {
-                            @Override
-                            public void run() {
-                                // todo save token
-                            }
-                        });
-                        Lg.d("login success");
                         token = user.getData().getToken();
 
                         Lg.d("get settings");
                         return evs.settings();
                     }
-                }).flatMap(new Function<URITemp, ObservableSource<Map<Media, URITemp>>>() {
+                }).observeOn(Schedulers.io()).flatMap(new Function<URITemp, ObservableSource<Map.Entry<@NonNull Media, URITemp>>>() {
                     @Override
-                    public ObservableSource<Map<Media, URITemp>> apply(final URITemp uriTemp) throws Throwable {
-                        final HashMap<String, String> queries = new HashMap<>();
-                        queries.put("count", "200");
-                        return evs.updates(queries).map(new Function<Media, Map<Media, URITemp>>() {
+                    public ObservableSource<Map.Entry<@NonNull Media, URITemp>> apply(final URITemp uriTemp) throws Throwable {
+                        Lg.d("get counts..");
+                        return new ObservableSource<Map.Entry<@NonNull Media, URITemp>>() {
                             @Override
-                            public Map<Media, URITemp> apply(Media media) throws Throwable {
-                                return Collections.singletonMap(media, uriTemp);
-                            }
-                        });
-                    }
-                }).flatMap(new Function<Map<Media, URITemp>, ObservableSource<?>>() {
-                    @Override
-                    public ObservableSource<?> apply(Map<Media, URITemp> mediaURITempMap) throws Throwable {
-                        File file = new File(out);
-                        if (file.exists()) {
-                            file.mkdirs();
-                        }
-                        if (file.isFile()) {
-                            if (!file.delete()) {
-                                Lg.d("file %s delete failed", file.getAbsoluteFile());
-                                file = new File(out +
-                                        Calendar.getInstance().get(Calendar.YEAR) +
-                                        Calendar.getInstance().get(Calendar.MONTH) +
-                                        Calendar.getInstance().get(Calendar.DAY_OF_MONTH) +
-                                        Calendar.getInstance().get(Calendar.HOUR_OF_DAY));
-                                file.mkdirs();
-                                Lg.d("use %s as out", file.getAbsoluteFile());
-                            }
-                        }
-                        for (Map.Entry<Media, URITemp> e : mediaURITempMap.entrySet()) {
-                            final Media media = e.getKey();
-                            final URITemp uri = e.getValue();
-                            final String origin = uri.getData().getUri_template().getOrigin();
-                            final List<Media.MediaList> media_list = media.getData().getMedia_list();
-                            for (final Media.MediaList i : media_list) {
-                                final String taken = i.getTaken();
-                                final Date date = df.parse(taken);
-                                final String dir = String.format("%02d/%02d", date.getYear() + 1900,
-                                        date.getMonth() + 1);
-                                final File file1 = new File(file, dir);
-                                if (!file1.exists()) {
-                                    file1.mkdirs();
+                            public void subscribe(@NonNull Observer<? super Map.Entry<@NonNull Media, URITemp>> observer) {
+                                boolean more = true;
+                                String prev = null;
+                                while (more) {
+                                    final HashMap<String, String> queries = new HashMap<>();
+                                    queries.put("count", "200");
+                                    if (prev != null && prev.length() > 0) {
+                                        queries.put("p", prev);
+                                    }
+                                    Lg.d("get count (prev: %s) -> %s", prev, queries.toString());
+                                    @NonNull final Media media = evs.updates(queries).subscribeOn(Schedulers.computation())
+                                            .blockingSingle();
+                                    more = media.getPagination().isHas_more();
+                                    prev = media.getPagination().getPrev();
+                                    Lg.d("get count end -> %s - %s", more, prev);
+                                    final Map.Entry<@NonNull Media, URITemp> entry = new HashMap.SimpleEntry<>(media, uriTemp);
+                                    observer.onNext(entry);
                                 }
-
-                                final boolean isVideo = "video".equalsIgnoreCase(i.getFormat());
-                                final String fileName = String.format("%s_%02d%02d%02d_%02d%02d%02d.%s", isVideo ? "VID" : "IMG",
-                                        date.getYear() + 1900, date.getMonth() + 1, date.getDate(),
-                                        date.getHours(), date.getMinutes(), date.getSeconds(),
-                                        isVideo ? "mp4" : "jpg");
-                                final File f = new File(out, dir + "/" + fileName);
-                                if (f.exists()) {
-                                    final MessageDigest md5 = MessageDigest.getInstance("md5");
-                                    try (FileInputStream fis = new FileInputStream(f)) {
-                                        byte[] buf = new byte[2048];
-                                        int read = 0;
-                                        while ((read = fis.read(buf)) > 0) {
-                                            md5.update(buf);
-                                        }
-
-                                        final String md5s = MD5.toHexString(md5.digest());
-                                        if (md5s.equalsIgnoreCase(i.getMd5())) {
-                                            Lg.d("md5 match, skip download");
-                                        }
-                                        return Observable.just(1);
+//                                Lg.d("onComplete");
+//                                observer.onComplete();
+//                                okHttpClient.dispatcher().cancelAll();
+//                                okHttpClient.connectionPool().evictAll();
+//                                okHttpClient.dispatcher().executorService().shutdown();
+//                                Lg.d(okHttpClient.connectionPool().connectionCount() + "" +
+//                                        " connectionPool " + okHttpClient.connectionPool().idleConnectionCount());
+//                                Lg.d(okHttpClient.dispatcher().queuedCallsCount()
+//                                        + " == " + okHttpClient.dispatcher().runningCallsCount());
+                            }
+                        };
+                    }
+                }).observeOn(Schedulers.io()).flatMap(new Function<Map.Entry<@NonNull Media, URITemp>, ObservableSource<DownloadBena>>() {
+                    @Override
+                    public ObservableSource<DownloadBena> apply(Map.Entry<@NonNull Media, URITemp> entry) throws Throwable {
+                        Lg.d("parse media in");
+                        return new ObservableSource<DownloadBena>() {
+                            @Override
+                            public void subscribe(@NonNull Observer<? super DownloadBena> observer) {
+                                Lg.d("parse media subscribe in");
+                                File file = new File(out);
+                                if (!file.exists()) {
+                                    file.mkdirs();
+                                }
+                                if (file.isFile()) {
+                                    if (!file.delete()) {
+                                        Lg.d("file %s delete failed", file.getAbsoluteFile());
+                                        file = new File(out +
+                                                Calendar.getInstance().get(Calendar.YEAR) +
+                                                Calendar.getInstance().get(Calendar.MONTH) +
+                                                Calendar.getInstance().get(Calendar.DAY_OF_MONTH) +
+                                                Calendar.getInstance().get(Calendar.HOUR_OF_DAY));
+                                        file.mkdirs();
+                                        Lg.d("use %s as out", file.getAbsoluteFile());
                                     }
                                 }
+                                final Media media = entry.getKey();
+                                final URITemp uri = entry.getValue();
+                                final String origin = uri.getData().getUri_template().getOrigin();
+                                final List<Media.MediaList> media_list = media.getData().getMedia_list();
+                                for (final Media.MediaList i : media_list) {
+                                    if (i.isDeleted()) {
+                                        Lg.w("media %d has been deleted", i.getId());
+                                    } else {
+                                        Lg.d("send media %s to download", i.getId());
+                                        observer.onNext(new DownloadBena(file, i, origin));
+                                    }
+                                }
+                            }
+                        };
+                    }
+                }).observeOn(Schedulers.io()).flatMap(new Function<DownloadBena, ObservableSource<String>>() {
+                    @Override
+                    public ObservableSource<String> apply(DownloadBena downloadBena) throws Throwable {
 
-                                Schedulers.io().scheduleDirect(new Runnable() {
+                        return Observable.just(downloadBena).subscribeOn(downloadSchedulers)
+                                .map(new Function<DownloadBena, String>() {
                                     @Override
-                                    public void run() {
+                                    public String apply(DownloadBena downloadBena) throws Throwable {
+                                        final File file = downloadBena.getFile();
+                                        final Media.MediaList i = downloadBena.getMedia();
+                                        final String origin = downloadBena.getOrigin();
+                                        Lg.d("media_list start: %s", i.getId());
+                                        String taken = i.getTaken();
+                                        final Date date;
                                         try {
-                                            retrofit2.Response<ResponseBody> res = evs.download(origin.replace("<media_id>",
-                                                    String.valueOf(i.getId())) + "?media_token=" + i.getToken()).execute();
-                                            assert res.body() != null;
-                                            final InputStream inputStream = res.body().byteStream();
-                                            FileOutputStream fos = new FileOutputStream(f);
-                                            try {
-                                                byte[] buf = new byte[2048];
-                                                int read = 0;
-                                                Lg.d("start writing...");
-                                                while ((read = inputStream.read(buf)) > 0) {
-                                                    fos.write(buf, 0, read);
-                                                }
+                                            if (taken == null || taken.length() == 0) {
+                                                taken = i.getCreated_at();
+                                                Lg.w("taken time is null, use Created_at");
+                                            }
+                                            Lg.d("parse date: %s", taken);
 
-                                            } finally {
-                                                Lg.d("download sucess at %s", f.getAbsolutePath());
-                                                inputStream.close();
-                                                fos.close();
+                                            SimpleDateFormat df = threadLocal.get();
+                                            if (df == null) {
+                                                threadLocal.set(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss"));
+                                                df = threadLocal.get();
                                             }
 
-                                        } catch (IOException ex) {
-                                            ex.printStackTrace();
+                                            date = df.parse(taken);
+                                            final String dir = String.format("%02d/%02d", date.getYear() + 1900,
+                                                    date.getMonth() + 1);
+                                            final File file1 = new File(file, dir);
+                                            if (!file1.exists()) {
+                                                file1.mkdirs();
+                                            }
+                                            final boolean isVideo = "video".equalsIgnoreCase(i.getFormat());
+                                            final String fileName = String.format("%s_%02d%02d%02d_%02d%02d%02d.%s", isVideo ? "VID" : "IMG",
+                                                    date.getYear() + 1900, date.getMonth() + 1, date.getDate(),
+                                                    date.getHours(), date.getMinutes(), date.getSeconds(),
+                                                    isVideo ? "mp4" : "jpg");
+                                            final File f = new File(out, dir + "/" + fileName);
+                                            final String url = origin.replace("<media_id>",
+                                                    String.valueOf(i.getId())) + "?media_token=" + i.getToken();
+
+                                            Lg.d("out file is %s", f.getAbsolutePath());
+                                            if (f.exists()) {
+                                                Lg.w("f - %s exists", f.getAbsolutePath());
+                                                final MessageDigest md5 = MessageDigest.getInstance("md5");
+                                                try (FileInputStream fis = new FileInputStream(f)) {
+                                                    byte[] buf = new byte[BUF_SIZE];
+                                                    int read = 0;
+                                                    while ((read = fis.read()) > 0) {
+                                                        md5.update(buf, 0, read);
+                                                    }
+
+                                                    final String md5s = MD5.toHexString(md5.digest());
+                                                    if (md5s.equalsIgnoreCase(i.getMd5())) {
+                                                        Lg.w("md5 match, skip download");
+                                                        return String.format("%s(md5: %s) of %s(md5: %s) is already downloaded",
+                                                                f.getAbsolutePath(), md5s, url, i.getMd5());
+                                                    }
+                                                }
+                                            }
+                                            retrofit2.Response<ResponseBody> res = evs.download(url).execute();
+                                            if (res.code() == 200) {
+                                                assert res.body() != null;
+                                                final InputStream fis = res.body().byteStream();
+                                                try (FileOutputStream fos = new FileOutputStream(f)) {
+//                                            bs.getBuffer().copyTo(fos);
+//                                            fos.flush();
+                                                    byte[] bf = new byte[BUF_SIZE];
+                                                    int rd = 0, count = 0;
+                                                    Lg.w("writing file[%s] start", f.getName());
+                                                    while ((rd = fis.read(bf)) > 0) {
+//                                                Lg.d("write %s bytes", rd);
+                                                        count += rd;
+                                                        fos.write(bf, 0, rd);
+                                                    }
+                                                    fos.flush();
+                                                    Lg.w("writing (%s bytes) file[%s] done", count, f.getName());
+                                                }
+                                            } else {
+                                                Lg.w("download failed: server : %s - %s", res.code(),
+                                                        new Gson().fromJson(Objects.requireNonNull(res.body()).string(),
+                                                                Base.class).toString());
+                                            }
+                                            return String.format("%s(md5: %s) of %s(md5: %s) download success",
+                                                    f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
+
+                                        } catch (ParseException e) {
+                                            e.printStackTrace();
+                                            Lg.w("df parse error: %s", taken);
+                                            return e.getMessage() == null ? e.getMessage() : "exception throw";
+                                        } catch (NoSuchAlgorithmException | IOException e) {
+                                            e.printStackTrace();
+                                            return e.getMessage() == null ? e.getMessage() : "exception throw";
                                         }
                                     }
                                 });
+                    }
+                }).observeOn(Schedulers.io());
+    }
 
-                            }
 
-                        }
-                        return Observable.just(1);
-                    }
-                }).subscribeOn(Schedulers.computation()).subscribe(new Consumer<Object>() {
-                    @Override
-                    public void accept(Object o) throws Throwable {
-                        Lg.d("%s - ", o);
-                    }
-                }, new Consumer<Throwable>() {
-                    @Override
-                    public void accept(Throwable throwable) throws Throwable {
-                        Lg.d(throwable);
-                    }
-                });
-        while (!disposable.isDisposed()) {
+    private static class DownloadBena {
+
+        private File file;
+        private Media.MediaList media;
+        private String origin;
+
+        public DownloadBena(File file, Media.MediaList media, String origin) {
+            this.file = file;
+            this.media = media;
+            this.origin = origin;
+        }
+
+        public File getFile() {
+            return file;
+        }
+
+        public Media.MediaList getMedia() {
+            return media;
+        }
+
+        public String getOrigin() {
+            return origin;
         }
     }
 }
+

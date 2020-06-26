@@ -9,6 +9,10 @@ public class User extends Base {
 
     private UserData data;
 
+    public User(String tk) {
+        this.data = new UserData(tk);
+    }
+
     public UserData getData() {
         return data;
     }
@@ -21,7 +25,12 @@ public class User extends Base {
     }
 
     public static class UserData {
+
         private String token;
+
+        public UserData(String token) {
+            this.token = token;
+        }
 
         public String getToken() {
             return token;
