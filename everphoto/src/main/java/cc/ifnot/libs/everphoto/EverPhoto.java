@@ -180,7 +180,7 @@ public enum EverPhoto {
     public Observable<String> doDownload() {
         if (e) {
             return Observable.just(new File(out, ".token"))
-                    .observeOn(downloadSchedulers)
+                    .subscribeOn(Schedulers.io())
                     .map(file -> {
                         if (file.exists() && file.isFile()) {
                             byte[] bf = new byte[1024];
@@ -192,7 +192,7 @@ public enum EverPhoto {
                         }
                         throw new IllegalStateException(String.format(
                                 ".token not found in %s", out));
-                    }).flatMap((Function<String, ObservableSource<DownloadBena>>) s -> observer -> {
+                    }).flatMap((Function<String, ObservableSource<DownloadBean>>) s -> observer -> {
 
                         final File errF = new File(out, ".err");
                         if (errF.isFile()) {
@@ -215,7 +215,7 @@ public enum EverPhoto {
                                         MediaInfo info = evs.info(s, Long.parseLong(strings[3])).execute().body();
                                         if (info != null && origin != null) {
                                             Lg.d("download(all: %s) media: %s", all.incrementAndGet(), info.getData().getId());
-                                            observer.onNext(new DownloadBena(f, info.getData(), origin));
+                                            observer.onNext(new DownloadBean(f, info.getData(), origin));
                                         }
                                     }
                                 }
@@ -224,9 +224,10 @@ public enum EverPhoto {
                                 observer.onError(ex);
                             }
                         }
-
-                    }).flatMap((Function<DownloadBena, ObservableSource<String>>) downloadBena -> Observable.just(downloadBena).observeOn(downloadSchedulers)
-                            .map((Function<DownloadBena, String>) this::downloadBean)).observeOn(downloadSchedulers);
+                    }).flatMap((Function<DownloadBean, ObservableSource<DownloadBean>>) downloadBean -> Observable.just(downloadBean)
+                            .map((Function<DownloadBean, DownloadBean>) this::checkBean)).observeOn(Schedulers.io())
+                    .flatMap((Function<DownloadBean, ObservableSource<String>>) downloadBean -> Observable.just(downloadBean)
+                            .map((Function<DownloadBean, String>) this::downloadBean));
         }
 
         return Observable.fromCallable(new Callable<User>() {
@@ -346,13 +347,13 @@ public enum EverPhoto {
                             }
                         };
                     }
-                }).observeOn(Schedulers.io()).flatMap(new Function<Map.Entry<@NonNull Media, URITemp>, ObservableSource<DownloadBena>>() {
+                }).observeOn(Schedulers.io()).flatMap(new Function<Map.Entry<@NonNull Media, URITemp>, ObservableSource<DownloadBean>>() {
                     @Override
-                    public ObservableSource<DownloadBena> apply(Map.Entry<@NonNull Media, URITemp> entry) throws Throwable {
+                    public ObservableSource<DownloadBean> apply(Map.Entry<@NonNull Media, URITemp> entry) throws Throwable {
                         Lg.d("parse media in");
-                        return new ObservableSource<DownloadBena>() {
+                        return new ObservableSource<DownloadBean>() {
                             @Override
-                            public void subscribe(@NonNull Observer<? super DownloadBena> observer) {
+                            public void subscribe(@NonNull Observer<? super DownloadBean> observer) {
                                 Lg.d("parse media subscribe in");
                                 File file = new File(out);
                                 if (!file.exists()) {
@@ -379,32 +380,90 @@ public enum EverPhoto {
                                         Lg.w("media %d has been deleted", i.getId());
                                     } else {
                                         Lg.d("send media %s (all: %s) to download", i.getId(), all.incrementAndGet());
-                                        observer.onNext(new DownloadBena(file, i, origin));
+                                        observer.onNext(new DownloadBean(file, i, origin));
                                     }
                                 }
                             }
                         };
                     }
-                }).observeOn(Schedulers.io()).flatMap(new Function<DownloadBena, ObservableSource<String>>() {
+                }).flatMap(new Function<DownloadBean, ObservableSource<DownloadBean>>() {
                     @Override
-                    public ObservableSource<String> apply(DownloadBena downloadBena) throws Throwable {
+                    public ObservableSource<DownloadBean> apply(DownloadBean downloadBean) throws Throwable {
 
-                        return Observable.just(downloadBena).subscribeOn(downloadSchedulers)
-                                .map(new Function<DownloadBena, String>() {
+                        return Observable.just(downloadBean).subscribeOn(Schedulers.io())
+                                .map(new Function<DownloadBean, DownloadBean>() {
                                     @Override
-                                    public String apply(DownloadBena downloadBena) throws Throwable {
-                                        return downloadBean(downloadBena);
+                                    public DownloadBean apply(DownloadBean downloadBean) throws Throwable {
+                                        return checkBean(downloadBean);
                                     }
                                 });
                     }
-                }).observeOn(Schedulers.io());
+                }).flatMap(new Function<DownloadBean, ObservableSource<String>>() {
+                    @Override
+                    public ObservableSource<String> apply(DownloadBean downloadBean) throws Throwable {
+                        return Observable.just(downloadBean).observeOn(downloadSchedulers)
+                                .map(new Function<DownloadBean, String>() {
+                                    @Override
+                                    public String apply(DownloadBean downloadBean) throws Throwable {
+                                        return downloadBean(downloadBean);
+                                    }
+                                });
+                    }
+                });
+    }
+
+    private String downloadBean(DownloadBean downloadBean) {
+        try {
+            final File f = downloadBean.getFile();
+            final String origin = downloadBean.getOrigin();
+            final Media.MediaList i = downloadBean.getMedia();
+
+            final String url = origin.replace("<media_id>",
+                    String.valueOf(i.getId())) + "?media_token=" + i.getToken();
+            retrofit2.Response<ResponseBody> res = evs.download(url).execute();
+            if (res.code() == 200) {
+                assert res.body() != null;
+                final InputStream fis = res.body().byteStream();
+                try (FileOutputStream fos = new FileOutputStream(f)) {
+//                                            bs.getBuffer().copyTo(fos);
+//                                            fos.flush();
+                    byte[] bf = new byte[BUF_SIZE];
+                    int rd = 0, count = 0;
+                    Lg.w("downloading<D:%s-E:%s-L:%s/%s> file[%s] start",
+                            index.incrementAndGet(), err.get(), local.get(), all.get(), f.getName());
+                    while ((rd = fis.read(bf)) != -1) {
+//                                                Lg.d("write %s bytes", rd);
+                        count += rd;
+                        fos.write(bf, 0, rd);
+                    }
+                    fos.flush();
+                    dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
+                            i.getMd5(), i.getId(), i.getSource_path()).getBytes());
+                    Lg.w("download <D:%s-E:%s-L:%s/%s> (%s bytes) file[%s] done",
+                            index.get(), err.get(), local.get(), all.get(), count, f.getName());
+                }
+            } else {
+                Lg.w("download failed <D:%s-E:%s-L:%s/%s>: server : %s - %s",
+                        index.get(), err.incrementAndGet(), local.get(), all.get(), res.code(),
+                        new Gson().fromJson(Objects.requireNonNull(res.body()).string(),
+                                Base.class).toString());
+                errfs.write(String.format("%s;%s;%s;%s;%s\n",
+                        "server:" + res.code(), f.getName(),
+                        i.getMd5(), i.getId(), i.getSource_path()).getBytes());
+            }
+            return String.format("%s(md5: %s) of %s(md5: %s) download success",
+                    f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
+        } catch (IOException ex) {
+            ex.printStackTrace();
+            return "downloadBean " + ex.getMessage();
+        }
     }
 
     @Nullable
-    private String downloadBean(DownloadBena downloadBena) throws IOException {
-        final File file = downloadBena.getFile();
-        final Media.MediaList i = downloadBena.getMedia();
-        final String origin = downloadBena.getOrigin();
+    private DownloadBean checkBean(DownloadBean downloadBean) throws IOException {
+        final File file = downloadBean.getFile();
+        final Media.MediaList i = downloadBean.getMedia();
+        final String origin = downloadBean.getOrigin();
         Lg.d("media_list start: %s", i.getId());
         String taken = i.getTaken();
         final Date date;
@@ -435,8 +494,7 @@ public enum EverPhoto {
                     date.getHours(), date.getMinutes(), date.getSeconds(),
                     isVideo ? "mp4" : "jpg");
             f = new File(out, dir + "/" + fileName);
-            final String url = origin.replace("<media_id>",
-                    String.valueOf(i.getId())) + "?media_token=" + i.getToken();
+
 
             Lg.d("out file is %s", f.getAbsolutePath());
             if (f.exists()) {
@@ -444,8 +502,9 @@ public enum EverPhoto {
                     Lg.d("skipped: <%s> local check is not enabled; default to pass", local.incrementAndGet());
                     dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), "local",
                             i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-                    return String.format("%s(md5: %s) of %s(md5: %s) exists, skipped",
-                            f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
+//                    return String.format("%s(md5: %s) of %s(md5: %s) exists, skipped",
+//                            f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
+                    return downloadBean.setShouldDownload(false);
                 }
                 Lg.w("f - %s exists", f.getAbsolutePath());
                 final MessageDigest md5 = MessageDigest.getInstance("md5");
@@ -462,8 +521,9 @@ public enum EverPhoto {
                         dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
                                 md5s, i.getId(), i.getSource_path()).getBytes());
                         Lg.w("skipped <%s> local md5 match  , skip download", local.incrementAndGet());
-                        return String.format("%s(md5: %s) of %s(md5: %s) is already downloaded",
-                                f.getAbsolutePath(), md5s, url, i.getMd5());
+                        return downloadBean.setFile(f).setShouldDownload(false)
+                                .setMessage(String.format("%s(md5: %s) is already downloaded",
+                                        f.getAbsolutePath(), md5s));
                     } else {
                         // in case same date for different photo
                         int index = 0;
@@ -482,40 +542,7 @@ public enum EverPhoto {
                     }
                 }
             }
-            retrofit2.Response<ResponseBody> res = evs.download(url).execute();
-            if (res.code() == 200) {
-                assert res.body() != null;
-                final InputStream fis = res.body().byteStream();
-                try (FileOutputStream fos = new FileOutputStream(f)) {
-//                                            bs.getBuffer().copyTo(fos);
-//                                            fos.flush();
-                    byte[] bf = new byte[BUF_SIZE];
-                    int rd = 0, count = 0;
-                    Lg.w("downloading <%s/%s> file[%s] start", index.incrementAndGet(),
-                            all.get(), f.getName());
-                    while ((rd = fis.read(bf)) != -1) {
-//                                                Lg.d("write %s bytes", rd);
-                        count += rd;
-                        fos.write(bf, 0, rd);
-                    }
-                    fos.flush();
-                    dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
-                            i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-                    Lg.w("download <D:%s-E:%s-L:%s/%s> (%s bytes) file[%s] done",
-                            index.get(), err.get(), local.get(), all.get(), count, f.getName());
-                }
-            } else {
-                Lg.w("download failed <D:%s-E:%s-L:%s/%s>: server : %s - %s",
-                        index.get(), err.incrementAndGet(), local.get(), all.get(), res.code(),
-                        new Gson().fromJson(Objects.requireNonNull(res.body()).string(),
-                                Base.class).toString());
-                errfs.write(String.format("%s;%s;%s;%s;%s\n",
-                        "server:" + res.code(), f.getName(),
-                        i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-            }
-            return String.format("%s(md5: %s) of %s(md5: %s) download success",
-                    f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
-
+            return downloadBean.setFile(f).setShouldDownload(true);
         } catch (ParseException e) {
             e.printStackTrace();
             if (f != null) {
@@ -529,7 +556,7 @@ public enum EverPhoto {
             errfs.write(String.format("%s;%s;%s;%s;%s\n",
                     "df parse", f == null ? "null" : f.getName(),
                     i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-            return e.getMessage() == null ? e.getMessage() : "exception throw";
+            return downloadBean.setFile(f).setMessage(e.getMessage()).setShouldDownload(false);
         } catch (NoSuchAlgorithmException | IOException e) {
             e.printStackTrace();
             Lg.w("download <D:%s-E:%s-L:%s/%s> io error when download %s; delete it",
@@ -538,24 +565,50 @@ public enum EverPhoto {
             errfs.write(String.format("%s;%s;%s;%s;%s\n",
                     "io error", f.getName(),
                     i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-            return e.getMessage() == null ? e.getMessage() : "exception throw";
+            return downloadBean.setFile(f).setShouldDownload(false).setMessage(
+                    e.getMessage());
         }
     }
 
-    private static class DownloadBena {
+    private static class DownloadBean {
 
+        private boolean shouldDownload;
+        private String message;
         private File file;
         private Media.MediaList media;
         private String origin;
 
-        public DownloadBena(File file, Media.MediaList media, String origin) {
+        public DownloadBean(File file, Media.MediaList media, String origin) {
             this.file = file;
             this.media = media;
             this.origin = origin;
         }
 
+        public boolean isShouldDownload() {
+            return shouldDownload;
+        }
+
+        public DownloadBean setShouldDownload(boolean shouldDownload) {
+            this.shouldDownload = shouldDownload;
+            return this;
+        }
+
+        public String getMessage() {
+            return message;
+        }
+
+        public DownloadBean setMessage(String message) {
+            this.message = message;
+            return this;
+        }
+
         public File getFile() {
             return file;
+        }
+
+        public DownloadBean setFile(File file) {
+            this.file = file;
+            return this;
         }
 
         public Media.MediaList getMedia() {
