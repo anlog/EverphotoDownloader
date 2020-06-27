@@ -12,6 +12,7 @@ import java.security.NoSuchAlgorithmException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -21,6 +22,7 @@ import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import cc.ifnot.libs.everphoto.bean.res.Base;
 import cc.ifnot.libs.everphoto.bean.res.Media;
@@ -110,11 +112,12 @@ public enum EverPhoto {
     String out;
     boolean verbose;
 
-    boolean isDone = false;
+    AtomicInteger all = new AtomicInteger(0);
+    AtomicInteger index = new AtomicInteger(0);
+    Map<Long, AtomicInteger> refs = Collections.synchronizedMap(new HashMap<>());
     private @NonNull Scheduler downloadSchedulers = Schedulers.from(
             Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() + 1));
     private FileOutputStream dfs;
-
     private FileOutputStream errfs;
 
     public EverPhoto setMobile(String mobile) {
@@ -305,7 +308,7 @@ public enum EverPhoto {
                                     if (i.isDeleted()) {
                                         Lg.w("media %d has been deleted", i.getId());
                                     } else {
-                                        Lg.d("send media %s to download", i.getId());
+                                        Lg.d("send media %s (all: %s) to download", i.getId(), all.incrementAndGet());
                                         observer.onNext(new DownloadBena(file, i, origin));
                                     }
                                 }
@@ -372,11 +375,23 @@ public enum EverPhoto {
                                                     if (md5s.equalsIgnoreCase(i.getMd5())) {
                                                         dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
                                                                 md5s, i.getId(), i.getSource_path()).getBytes());
-                                                        Lg.w("md5 match, skip download");
+                                                        Lg.w("download task: %s md5 match  , skip download", all.decrementAndGet());
                                                         return String.format("%s(md5: %s) of %s(md5: %s) is already downloaded",
                                                                 f.getAbsolutePath(), md5s, url, i.getMd5());
                                                     } else {
-                                                        Lg.w("md5 does not match %s", f.getName());
+                                                        // in case same date for different photo
+                                                        int index = 0;
+                                                        if (count == i.getSize()) {
+                                                            if (refs.containsKey(i.getId())) {
+                                                                index = refs.get(i.getId()).incrementAndGet();
+                                                            } else {
+                                                                refs.put(i.getId(), new AtomicInteger(index++));
+                                                            }
+                                                            f = new File(f.getName() + "_" + index);
+                                                            Lg.w("will sava as %s", f.getName());
+                                                        } else {
+                                                            Lg.w("md5 does not match %s, incomplete file; delete it", f.getName());
+                                                        }
                                                     }
                                                 }
                                             }
@@ -389,7 +404,8 @@ public enum EverPhoto {
 //                                            fos.flush();
                                                     byte[] bf = new byte[BUF_SIZE];
                                                     int rd = 0, count = 0;
-                                                    Lg.w("writing file[%s] start", f.getName());
+                                                    Lg.w("downloading <%s/%s> file[%s] start", index.incrementAndGet(),
+                                                            all.get(), f.getName());
                                                     while ((rd = fis.read(bf)) != -1) {
 //                                                Lg.d("write %s bytes", rd);
                                                         count += rd;
@@ -398,10 +414,12 @@ public enum EverPhoto {
                                                     fos.flush();
                                                     dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
                                                             i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-                                                    Lg.w("writing (%s bytes) file[%s] done", count, f.getName());
+                                                    Lg.w("download <%s/%s> (%s bytes) file[%s] done",
+                                                            index.get(), all.get(), count, f.getName());
                                                 }
                                             } else {
-                                                Lg.w("download failed: server : %s - %s", res.code(),
+                                                Lg.w("download failed <%s/%s>: server : %s - %s",
+                                                        index.get(), all.get(), res.code(),
                                                         new Gson().fromJson(Objects.requireNonNull(res.body()).string(),
                                                                 Base.class).toString());
                                                 errfs.write(String.format("%s;%s;%s;%s;%s\n",
@@ -413,13 +431,23 @@ public enum EverPhoto {
 
                                         } catch (ParseException e) {
                                             e.printStackTrace();
-                                            Lg.w("df parse error: %s", taken);
+                                            if (f != null) {
+                                                Lg.w("download <%s/%s> df parse error: %s for %s; delete it",
+                                                        index.get(), all.get(), taken, f.getAbsolutePath());
+                                                f.delete();
+                                            } else {
+                                                Lg.w("download <%s/%s> df parse error: %s file is null",
+                                                        index.get(), all.get(), taken);
+                                            }
                                             errfs.write(String.format("%s;%s;%s;%s;%s\n",
                                                     "df parse", f == null ? "null" : f.getName(),
                                                     i.getMd5(), i.getId(), i.getSource_path()).getBytes());
                                             return e.getMessage() == null ? e.getMessage() : "exception throw";
                                         } catch (NoSuchAlgorithmException | IOException e) {
                                             e.printStackTrace();
+                                            Lg.w("download <%s/%s> io error when download %s; delete it",
+                                                    index.get(), all.get(), f.getAbsolutePath());
+                                            f.delete();
                                             errfs.write(String.format("%s;%s;%s;%s;%s\n",
                                                     "io error", f.getName(),
                                                     i.getMd5(), i.getId(), i.getSource_path()).getBytes());
