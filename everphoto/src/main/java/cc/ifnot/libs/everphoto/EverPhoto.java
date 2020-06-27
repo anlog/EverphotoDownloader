@@ -375,7 +375,7 @@ public enum EverPhoto {
                                                     if (md5s.equalsIgnoreCase(i.getMd5())) {
                                                         dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
                                                                 md5s, i.getId(), i.getSource_path()).getBytes());
-                                                        Lg.w("download task: %s md5 match  , skip download", all.decrementAndGet());
+                                                        Lg.w("download task: %s md5 match  , skip download", all.get());
                                                         return String.format("%s(md5: %s) of %s(md5: %s) is already downloaded",
                                                                 f.getAbsolutePath(), md5s, url, i.getMd5());
                                                     } else {
@@ -387,7 +387,8 @@ public enum EverPhoto {
                                                             } else {
                                                                 refs.put(i.getId(), new AtomicInteger(index++));
                                                             }
-                                                            f = new File(f.getName() + "_" + index);
+                                                            f = new File(f.getParent(),
+                                                                    f.getName().replace(".", "_" + index + "."));
                                                             Lg.w("will sava as %s", f.getName());
                                                         } else {
                                                             Lg.w("md5 does not match %s, incomplete file; delete it", f.getName());
