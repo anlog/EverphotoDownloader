@@ -21,7 +21,6 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
@@ -203,7 +202,7 @@ public enum EverPhoto {
                         throw new IllegalStateException(String.format(
                                 ".token not found in %s", out));
                     }).flatMap((Function<String, ObservableSource<DownloadBean>>) s -> (ObservableSource<DownloadBean>) observer -> {
-
+                        token = s;
                         final File errF = new File(out, ".err");
                         if (errF.isFile()) {
                             try (final BufferedReader br =
@@ -223,18 +222,11 @@ public enum EverPhoto {
                                 while ((line = br.readLine()) != null) {
                                     Lg.d("read err file line: %s", line);
                                     //                                            io error;VID_20200516_135322.mp4;79815752e8dfd8897479cc593f977a7c;6827619680589447694;android://sdcard/DCIM/Camera/VID_20200516_135237.mp4
-                                    final String[] strings = line.split(";");
-                                    if (strings[1] != null && strings[3] != null) {
-                                        final String[] paths = strings[1].split("_");
-                                        final File f = new File(out, paths[1].substring(0, 3) + "/" + paths[1].substring(4, 5)
-                                                + "/" + strings[1]);
-
-                                        MediaInfo info = evs.info("Bearer " + s, Long.parseLong(strings[3])).execute().body();
-                                        Lg.d("evs get info: %s", info.toString());
-                                        if (info != null && origin != null) {
-                                            Lg.d("download(all: %s) media: %s", all.incrementAndGet(), info.getData().getId());
-                                            observer.onNext(new DownloadBean(f, info.getData(), origin));
-                                        }
+                                    MediaInfo info = evs.info("Bearer " + s, Long.parseLong(line.split(";")[3])).execute().body();
+                                    Lg.d("evs get info: %s", info.toString());
+                                    if (info != null && origin != null) {
+                                        Lg.d("download(all: %s) media: %s", all.incrementAndGet(), info.getData().getId());
+                                        observer.onNext(new DownloadBean(new File(out), info.getData(), origin));
                                     }
                                 }
                                 observer.onComplete();
@@ -475,8 +467,8 @@ public enum EverPhoto {
             } else {
                 Lg.w("download failed <D:%s-E:%s-L:%s/%s>: server : %s - %s",
                         index.get(), err.incrementAndGet(), local.get(), all.get(), res.code(),
-                        new Gson().fromJson(Objects.requireNonNull(res.body()).string(),
-                                Base.class).toString());
+                        res.body() != null ? new Gson().fromJson(res.body().string(),
+                                Base.class).toString() : "response err");
                 errfs.write(String.format("%s;%s;%s;%s;%s\n",
                         "server:" + res.code(), f.getName(),
                         i.getMd5(), i.getId(), i.getSource_path()).getBytes());
