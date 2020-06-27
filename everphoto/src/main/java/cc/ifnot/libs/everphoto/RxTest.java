@@ -1,6 +1,6 @@
 package cc.ifnot.libs.everphoto;
 
-import java.io.File;
+import java.util.concurrent.CountDownLatch;
 
 import cc.ifnot.libs.utils.Lg;
 import io.reactivex.rxjava3.annotations.NonNull;
@@ -24,10 +24,115 @@ public class RxTest {
         Lg.level(Lg.MORE);
         Lg.d("in");
 
-        final File file = new File(".test");
-        Lg.d("%s- --", file.getAbsolutePath());
-        file.renameTo(new File(".aa"));
-        Lg.d("as_ %s", file.getAbsolutePath());
+        @NonNull final Observable<Integer> just = Observable.just(1);
+        Lg.d(just);
+        @NonNull final Observable<Integer> a = just.subscribeOn(Schedulers.io());
+        Lg.d(a);
+        @NonNull final Observable<Integer> b = a.subscribeOn(Schedulers.computation());
+        Lg.d(b);
+
+
+        @NonNull final Disposable ds = Observable.just(1, 2, 3)
+                .subscribeOn(Schedulers.io())
+                .observeOn(Schedulers.single())
+                .map(new Function<Integer, Integer>() {
+                    @Override
+                    public Integer apply(Integer integer) throws Throwable {
+                        Lg.d(integer);
+                        return integer;
+                    }
+                }).subscribeOn(Schedulers.computation())
+                .map(new Function<Integer, Integer>() {
+                    @Override
+                    public Integer apply(Integer integer) throws Throwable {
+                        Lg.d("map");
+                        return integer * integer;
+                    }
+                }).subscribeOn(Schedulers.computation())
+                .observeOn(Schedulers.newThread())
+                .subscribe(new Consumer<Integer>() {
+                    @Override
+                    public void accept(Integer integer) throws Throwable {
+                        Lg.d("==" + integer);
+                    }
+                });
+
+        while (!ds.isDisposed()) {}
+
+        Lg.d();
+
+        if (true)return;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        @NonNull final Disposable disposable = Observable.just(1, 3)
+                .subscribeOn(Schedulers.single())
+                .flatMap(new Function<Integer, ObservableSource<Integer>>() {
+                    @Override
+                    public ObservableSource<Integer> apply(Integer integer) throws Throwable {
+                        return new ObservableSource<Integer>() {
+                            @Override
+                            public void subscribe(@NonNull Observer<? super Integer> observer) {
+                                Lg.d("flatMap = %s", integer);
+                                observer.onNext(integer + 100);
+                                observer.onNext(integer + 200);
+                                observer.onComplete();
+                            }
+                        };
+                    }
+                }, false, Integer.MAX_VALUE)
+                .flatMap(new Function<Integer, ObservableSource<Integer>>() {
+                    @Override
+                    public ObservableSource<Integer> apply(Integer integer) throws Throwable {
+                        return Observable.just(integer).subscribeOn(Schedulers.computation())
+                                .map(new Function<Integer, Integer>() {
+                                    @Override
+                                    public Integer apply(Integer integer) throws Throwable {
+                                        Lg.d("map = %s", integer);
+                                        return integer * integer;
+                                    }
+                                });
+                    }
+                })
+                .flatMap(new Function<Integer, ObservableSource<Integer>>() {
+                    @Override
+                    public ObservableSource<Integer> apply(Integer integer) throws Throwable {
+                        return new ObservableSource<Integer>() {
+                            @Override
+                            public void subscribe(@NonNull Observer<? super Integer> observer) {
+                                observer.onComplete();
+                            }
+                        };
+                    }
+                })
+                .observeOn(Schedulers.newThread())
+                .subscribe(new Consumer<Integer>() {
+                    @Override
+                    public void accept(Integer integer) throws Throwable {
+                        Lg.d("onNext: %s", integer);
+                    }
+                }, new Consumer<Throwable>() {
+                    @Override
+                    public void accept(Throwable throwable) throws Throwable {
+                        Lg.d("onErr");
+                    }
+                }, new Action() {
+                    @Override
+                    public void run() throws Throwable {
+                        Lg.d("onComplete");
+                        latch.countDown();
+                    }
+                });
+        while (!disposable.isDisposed()) {
+            try {
+                latch.await();
+                Lg.d("wait");
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+
+        if (true) return;
+
 
         @NonNull final Disposable dis = Observable.just(2)
                 .map(new Function<Integer, Integer>() {

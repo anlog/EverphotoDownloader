@@ -143,10 +143,12 @@ public class EverphotoDownloader {
                         .doDownload().observeOn(Schedulers.io())
                         .subscribe(s -> {
                                     Lg.d("ED: %s", s);
-                                    latch.countDown();
                                 }
                                 , throwable -> {
                                     Lg.d(throwable);
+                                    latch.countDown();
+                                }, () -> {
+                                    Lg.d("onComplete");
                                     latch.countDown();
                                 });
                 while (!disposable.isDisposed()) {
