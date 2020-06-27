@@ -412,12 +412,15 @@ public enum EverPhoto {
                 });
     }
 
-    private String downloadBean(DownloadBean downloadBean) {
-        try {
-            final File f = downloadBean.getFile();
-            final String origin = downloadBean.getOrigin();
-            final Media.MediaList i = downloadBean.getMedia();
+    private String downloadBean(DownloadBean downloadBean) throws IOException {
+        if (!downloadBean.shouldDownload) {
+            return downloadBean.message;
+        }
+        final File f = downloadBean.getFile();
+        final String origin = downloadBean.getOrigin();
+        final Media.MediaList i = downloadBean.getMedia();
 
+        try {
             final String url = origin.replace("<media_id>",
                     String.valueOf(i.getId())) + "?media_token=" + i.getToken();
             retrofit2.Response<ResponseBody> res = evs.download(url).execute();
@@ -453,9 +456,15 @@ public enum EverPhoto {
             }
             return String.format("%s(md5: %s) of %s(md5: %s) download success",
                     f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
-        } catch (IOException ex) {
-            ex.printStackTrace();
-            return "downloadBean " + ex.getMessage();
+        } catch (IOException e) {
+            e.printStackTrace();
+            Lg.w("download <D:%s-E:%s-L:%s/%s> io error when download %s; delete it",
+                    index.get(), err.incrementAndGet(), local.get(), all.get(), f.getAbsolutePath());
+            f.delete();
+            errfs.write(String.format("%s;%s;%s;%s;%s\n",
+                    "io error", f.getName(),
+                    i.getMd5(), i.getId(), i.getSource_path()).getBytes());
+            return "downloadBean " + e.getMessage();
         }
     }
 
@@ -502,9 +511,8 @@ public enum EverPhoto {
                     Lg.d("skipped: <%s> local check is not enabled; default to pass", local.incrementAndGet());
                     dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), "local",
                             i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-//                    return String.format("%s(md5: %s) of %s(md5: %s) exists, skipped",
-//                            f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
-                    return downloadBean.setShouldDownload(false);
+                    return downloadBean.setShouldDownload(false).setMessage(String.format("%s(md5: %s) exists, skipped",
+                            f.getAbsolutePath(), i.getMd5()));
                 }
                 Lg.w("f - %s exists", f.getAbsolutePath());
                 final MessageDigest md5 = MessageDigest.getInstance("md5");
