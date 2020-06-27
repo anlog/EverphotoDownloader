@@ -2,11 +2,15 @@ package cc.ifnot.libs.everphoto;
 
 import com.google.gson.Gson;
 
+import org.jetbrains.annotations.Nullable;
+
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.ParseException;
@@ -26,6 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import cc.ifnot.libs.everphoto.bean.res.Base;
 import cc.ifnot.libs.everphoto.bean.res.Media;
+import cc.ifnot.libs.everphoto.bean.res.MediaInfo;
 import cc.ifnot.libs.everphoto.bean.res.URITemp;
 import cc.ifnot.libs.everphoto.bean.res.User;
 import cc.ifnot.libs.utils.Lg;
@@ -85,7 +90,8 @@ public enum EverPhoto {
                         ch.put("device_id", "1046385102960840");
                         ch.put("x-device-uuid", "3d9327b9-7fec-4e1c-a963-4730b5a31a68");
                         ch.put("x-request-uuid", UUID.randomUUID().toString());
-                        if (!original.url().encodedPath().contains("auth")) {
+                        if (!original.url().encodedPath().contains("auth") ||
+                                original.headers().toMultimap().get("authorization").size() == 0) {
                             ch.put("authorization", "Bearer " + token);
                         }
                         Request.Builder requestBuilder = original.newBuilder()
@@ -172,6 +178,57 @@ public enum EverPhoto {
     }
 
     public Observable<String> doDownload() {
+        if (e) {
+            return Observable.just(new File(out, ".token"))
+                    .observeOn(downloadSchedulers)
+                    .map(file -> {
+                        if (file.exists() && file.isFile()) {
+                            byte[] bf = new byte[1024];
+                            try (final FileInputStream stream = new FileInputStream(file)) {
+                                final int read = stream.read(bf);
+                                Lg.d("success read .token from %s", out);
+                                return new String(bf, 0, read);
+                            }
+                        }
+                        throw new IllegalStateException(String.format(
+                                ".token not found in %s", out));
+                    }).flatMap((Function<String, ObservableSource<DownloadBena>>) s -> observer -> {
+
+                        final File errF = new File(out, ".err");
+                        if (errF.isFile()) {
+                            final File dest = new File(out, ".err_to_download");
+                            errF.renameTo(dest);
+                            try (final BufferedReader br =
+                                         new BufferedReader(new InputStreamReader(new FileInputStream(dest)))) {
+                                @NonNull final URITemp uriTemp = evs.settings().blockingSingle();
+                                final String origin = uriTemp.getData().getUri_template().getOrigin();
+
+                                String line;
+                                while ((line = br.readLine()) != null) {
+//                                            io error;VID_20200516_135322.mp4;79815752e8dfd8897479cc593f977a7c;6827619680589447694;android://sdcard/DCIM/Camera/VID_20200516_135237.mp4
+                                    final String[] strings = line.split(";");
+                                    if (strings[1] != null && strings[3] != null) {
+                                        final String[] paths = strings[1].split("_");
+                                        final File f = new File(out, paths[1].substring(0, 3) + "/" + paths[1].substring(4, 5)
+                                                + "/" + strings[1]);
+
+                                        MediaInfo info = evs.info(s, Long.parseLong(strings[3])).execute().body();
+                                        if (info != null && origin != null) {
+                                            Lg.d("download(all: %s) media: %s", all.incrementAndGet(), info.getData().getId());
+                                            observer.onNext(new DownloadBena(f, info.getData(), origin));
+                                        }
+                                    }
+                                }
+                            } catch (IOException ex) {
+                                ex.printStackTrace();
+                                observer.onError(ex);
+                            }
+                        }
+
+                    }).flatMap((Function<DownloadBena, ObservableSource<String>>) downloadBena -> Observable.just(downloadBena).observeOn(downloadSchedulers)
+                            .map((Function<DownloadBena, String>) this::downloadBean)).observeOn(downloadSchedulers);
+        }
+
         return Observable.fromCallable(new Callable<User>() {
             @Override
             public User call() throws Exception {
@@ -336,148 +393,153 @@ public enum EverPhoto {
                                 .map(new Function<DownloadBena, String>() {
                                     @Override
                                     public String apply(DownloadBena downloadBena) throws Throwable {
-                                        final File file = downloadBena.getFile();
-                                        final Media.MediaList i = downloadBena.getMedia();
-                                        final String origin = downloadBena.getOrigin();
-                                        Lg.d("media_list start: %s", i.getId());
-                                        String taken = i.getTaken();
-                                        final Date date;
-                                        File f = null;
-                                        try {
-                                            if (taken == null || taken.length() == 0) {
-                                                taken = i.getCreated_at();
-                                                Lg.w("taken time is null, use Created_at");
-                                            }
-                                            Lg.d("parse date: %s", taken);
-
-                                            SimpleDateFormat df = threadLocal.get();
-                                            if (df == null) {
-                                                threadLocal.set(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss"));
-                                                df = threadLocal.get();
-                                            }
-
-                                            date = df.parse(taken);
-                                            final String dir = String.format("%02d/%02d", date.getYear() + 1900,
-                                                    date.getMonth() + 1);
-                                            final File file1 = new File(file, dir);
-                                            if (!file1.exists()) {
-                                                file1.mkdirs();
-                                            }
-                                            final boolean isVideo = "video".equalsIgnoreCase(i.getFormat());
-                                            final String fileName = String.format("%s_%02d%02d%02d_%02d%02d%02d.%s", isVideo ? "VID" : "IMG",
-                                                    date.getYear() + 1900, date.getMonth() + 1, date.getDate(),
-                                                    date.getHours(), date.getMinutes(), date.getSeconds(),
-                                                    isVideo ? "mp4" : "jpg");
-                                            f = new File(out, dir + "/" + fileName);
-                                            final String url = origin.replace("<media_id>",
-                                                    String.valueOf(i.getId())) + "?media_token=" + i.getToken();
-
-                                            Lg.d("out file is %s", f.getAbsolutePath());
-                                            if (f.exists()) {
-                                                if (!c) {
-                                                    Lg.d("skipped: <%s> local check is not enabled; default to pass", local.incrementAndGet());
-                                                    dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), "local",
-                                                            i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-                                                    return String.format("%s(md5: %s) of %s(md5: %s) exists, skipped",
-                                                            f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
-                                                }
-                                                Lg.w("f - %s exists", f.getAbsolutePath());
-                                                final MessageDigest md5 = MessageDigest.getInstance("md5");
-                                                try (FileInputStream fis = new FileInputStream(f)) {
-                                                    byte[] buf = new byte[BUF_SIZE];
-                                                    int read = 0, count = 0;
-                                                    while ((read = fis.read(buf)) != -1) {
-                                                        count += read;
-                                                        md5.update(buf, 0, read);
-                                                    }
-
-                                                    final String md5s = MD5.toHexString(md5.digest());
-                                                    if (md5s.equalsIgnoreCase(i.getMd5())) {
-                                                        dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
-                                                                md5s, i.getId(), i.getSource_path()).getBytes());
-                                                        Lg.w("skipped <%s> local md5 match  , skip download", local.incrementAndGet());
-                                                        return String.format("%s(md5: %s) of %s(md5: %s) is already downloaded",
-                                                                f.getAbsolutePath(), md5s, url, i.getMd5());
-                                                    } else {
-                                                        // in case same date for different photo
-                                                        int index = 0;
-                                                        if (count == i.getSize()) {
-                                                            if (refs.containsKey(i.getId())) {
-                                                                index = refs.get(i.getId()).incrementAndGet();
-                                                            } else {
-                                                                refs.put(i.getId(), new AtomicInteger(index++));
-                                                            }
-                                                            f = new File(f.getParent(),
-                                                                    f.getName().replace(".", "_" + index + "."));
-                                                            Lg.w("will sava as %s", f.getName());
-                                                        } else {
-                                                            Lg.w("md5 does not match %s, incomplete file; delete it", f.getName());
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            retrofit2.Response<ResponseBody> res = evs.download(url).execute();
-                                            if (res.code() == 200) {
-                                                assert res.body() != null;
-                                                final InputStream fis = res.body().byteStream();
-                                                try (FileOutputStream fos = new FileOutputStream(f)) {
-//                                            bs.getBuffer().copyTo(fos);
-//                                            fos.flush();
-                                                    byte[] bf = new byte[BUF_SIZE];
-                                                    int rd = 0, count = 0;
-                                                    Lg.w("downloading <%s/%s> file[%s] start", index.incrementAndGet(),
-                                                            all.get(), f.getName());
-                                                    while ((rd = fis.read(bf)) != -1) {
-//                                                Lg.d("write %s bytes", rd);
-                                                        count += rd;
-                                                        fos.write(bf, 0, rd);
-                                                    }
-                                                    fos.flush();
-                                                    dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
-                                                            i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-                                                    Lg.w("download <D:%s-E:%s-L:%s/%s> (%s bytes) file[%s] done",
-                                                            index.get(), err.get(), local.get(), all.get(), count, f.getName());
-                                                }
-                                            } else {
-                                                Lg.w("download failed <D:%s-E:%s-L:%s/%s>: server : %s - %s",
-                                                        index.get(), err.get(), local.get(), all.get(), res.code(),
-                                                        new Gson().fromJson(Objects.requireNonNull(res.body()).string(),
-                                                                Base.class).toString());
-                                                errfs.write(String.format("%s;%s;%s;%s;%s\n",
-                                                        "server:" + res.code(), f.getName(),
-                                                        i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-                                            }
-                                            return String.format("%s(md5: %s) of %s(md5: %s) download success",
-                                                    f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
-
-                                        } catch (ParseException e) {
-                                            e.printStackTrace();
-                                            if (f != null) {
-                                                Lg.w("download <D:%s-E:%s-L:%s/%s> df parse error: %s for %s; delete it",
-                                                        index.get(), err.get(), local.get(), all.get(), taken, f.getAbsolutePath());
-                                                f.delete();
-                                            } else {
-                                                Lg.w("download <D:%s-E:%s-L:%s/%s> df parse error: %s file is null",
-                                                        index.get(), err.get(), local.get(), all.get(), taken);
-                                            }
-                                            errfs.write(String.format("%s;%s;%s;%s;%s\n",
-                                                    "df parse", f == null ? "null" : f.getName(),
-                                                    i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-                                            return e.getMessage() == null ? e.getMessage() : "exception throw";
-                                        } catch (NoSuchAlgorithmException | IOException e) {
-                                            e.printStackTrace();
-                                            Lg.w("download <D:%s-E:%s-L:%s/%s> io error when download %s; delete it",
-                                                    index.get(), err.get(), local.get(), all.get(), f.getAbsolutePath());
-                                            f.delete();
-                                            errfs.write(String.format("%s;%s;%s;%s;%s\n",
-                                                    "io error", f.getName(),
-                                                    i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-                                            return e.getMessage() == null ? e.getMessage() : "exception throw";
-                                        }
+                                        return downloadBean(downloadBena);
                                     }
                                 });
                     }
                 }).observeOn(Schedulers.io());
+    }
+
+    @Nullable
+    private String downloadBean(DownloadBena downloadBena) throws IOException {
+        final File file = downloadBena.getFile();
+        final Media.MediaList i = downloadBena.getMedia();
+        final String origin = downloadBena.getOrigin();
+        Lg.d("media_list start: %s", i.getId());
+        String taken = i.getTaken();
+        final Date date;
+        File f = null;
+        try {
+            if (taken == null || taken.length() == 0) {
+                taken = i.getCreated_at();
+                Lg.w("taken time is null, use Created_at");
+            }
+            Lg.d("parse date: %s", taken);
+
+            SimpleDateFormat df = threadLocal.get();
+            if (df == null) {
+                threadLocal.set(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss"));
+                df = threadLocal.get();
+            }
+
+            date = df.parse(taken);
+            final String dir = String.format("%02d/%02d", date.getYear() + 1900,
+                    date.getMonth() + 1);
+            final File file1 = new File(file, dir);
+            if (!file1.exists()) {
+                file1.mkdirs();
+            }
+            final boolean isVideo = "video".equalsIgnoreCase(i.getFormat());
+            final String fileName = String.format("%s_%02d%02d%02d_%02d%02d%02d.%s", isVideo ? "VID" : "IMG",
+                    date.getYear() + 1900, date.getMonth() + 1, date.getDate(),
+                    date.getHours(), date.getMinutes(), date.getSeconds(),
+                    isVideo ? "mp4" : "jpg");
+            f = new File(out, dir + "/" + fileName);
+            final String url = origin.replace("<media_id>",
+                    String.valueOf(i.getId())) + "?media_token=" + i.getToken();
+
+            Lg.d("out file is %s", f.getAbsolutePath());
+            if (f.exists()) {
+                if (!c) {
+                    Lg.d("skipped: <%s> local check is not enabled; default to pass", local.incrementAndGet());
+                    dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), "local",
+                            i.getMd5(), i.getId(), i.getSource_path()).getBytes());
+                    return String.format("%s(md5: %s) of %s(md5: %s) exists, skipped",
+                            f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
+                }
+                Lg.w("f - %s exists", f.getAbsolutePath());
+                final MessageDigest md5 = MessageDigest.getInstance("md5");
+                try (FileInputStream fis = new FileInputStream(f)) {
+                    byte[] buf = new byte[BUF_SIZE];
+                    int read = 0, count = 0;
+                    while ((read = fis.read(buf)) != -1) {
+                        count += read;
+                        md5.update(buf, 0, read);
+                    }
+
+                    final String md5s = MD5.toHexString(md5.digest());
+                    if (md5s.equalsIgnoreCase(i.getMd5())) {
+                        dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
+                                md5s, i.getId(), i.getSource_path()).getBytes());
+                        Lg.w("skipped <%s> local md5 match  , skip download", local.incrementAndGet());
+                        return String.format("%s(md5: %s) of %s(md5: %s) is already downloaded",
+                                f.getAbsolutePath(), md5s, url, i.getMd5());
+                    } else {
+                        // in case same date for different photo
+                        int index = 0;
+                        if (count == i.getSize()) {
+                            if (refs.containsKey(i.getId())) {
+                                index = refs.get(i.getId()).incrementAndGet();
+                            } else {
+                                refs.put(i.getId(), new AtomicInteger(index++));
+                            }
+                            f = new File(f.getParent(),
+                                    f.getName().replace(".", "_" + index + "."));
+                            Lg.w("will sava as %s", f.getName());
+                        } else {
+                            Lg.w("md5 does not match %s, incomplete file; delete it", f.getName());
+                        }
+                    }
+                }
+            }
+            retrofit2.Response<ResponseBody> res = evs.download(url).execute();
+            if (res.code() == 200) {
+                assert res.body() != null;
+                final InputStream fis = res.body().byteStream();
+                try (FileOutputStream fos = new FileOutputStream(f)) {
+//                                            bs.getBuffer().copyTo(fos);
+//                                            fos.flush();
+                    byte[] bf = new byte[BUF_SIZE];
+                    int rd = 0, count = 0;
+                    Lg.w("downloading <%s/%s> file[%s] start", index.incrementAndGet(),
+                            all.get(), f.getName());
+                    while ((rd = fis.read(bf)) != -1) {
+//                                                Lg.d("write %s bytes", rd);
+                        count += rd;
+                        fos.write(bf, 0, rd);
+                    }
+                    fos.flush();
+                    dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
+                            i.getMd5(), i.getId(), i.getSource_path()).getBytes());
+                    Lg.w("download <D:%s-E:%s-L:%s/%s> (%s bytes) file[%s] done",
+                            index.get(), err.get(), local.get(), all.get(), count, f.getName());
+                }
+            } else {
+                Lg.w("download failed <D:%s-E:%s-L:%s/%s>: server : %s - %s",
+                        index.get(), err.get(), local.get(), all.get(), res.code(),
+                        new Gson().fromJson(Objects.requireNonNull(res.body()).string(),
+                                Base.class).toString());
+                errfs.write(String.format("%s;%s;%s;%s;%s\n",
+                        "server:" + res.code(), f.getName(),
+                        i.getMd5(), i.getId(), i.getSource_path()).getBytes());
+            }
+            return String.format("%s(md5: %s) of %s(md5: %s) download success",
+                    f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
+
+        } catch (ParseException e) {
+            e.printStackTrace();
+            if (f != null) {
+                Lg.w("download <D:%s-E:%s-L:%s/%s> df parse error: %s for %s; delete it",
+                        index.get(), err.get(), local.get(), all.get(), taken, f.getAbsolutePath());
+                f.delete();
+            } else {
+                Lg.w("download <D:%s-E:%s-L:%s/%s> df parse error: %s file is null",
+                        index.get(), err.get(), local.get(), all.get(), taken);
+            }
+            errfs.write(String.format("%s;%s;%s;%s;%s\n",
+                    "df parse", f == null ? "null" : f.getName(),
+                    i.getMd5(), i.getId(), i.getSource_path()).getBytes());
+            return e.getMessage() == null ? e.getMessage() : "exception throw";
+        } catch (NoSuchAlgorithmException | IOException e) {
+            e.printStackTrace();
+            Lg.w("download <D:%s-E:%s-L:%s/%s> io error when download %s; delete it",
+                    index.get(), err.get(), local.get(), all.get(), f.getAbsolutePath());
+            f.delete();
+            errfs.write(String.format("%s;%s;%s;%s;%s\n",
+                    "io error", f.getName(),
+                    i.getMd5(), i.getId(), i.getSource_path()).getBytes());
+            return e.getMessage() == null ? e.getMessage() : "exception throw";
+        }
     }
 
     private static class DownloadBena {

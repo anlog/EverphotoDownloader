@@ -1,5 +1,7 @@
 package cc.ifnot.libs.everphoto;
 
+import java.io.File;
+
 import cc.ifnot.libs.utils.Lg;
 import io.reactivex.rxjava3.annotations.NonNull;
 import io.reactivex.rxjava3.core.Observable;
@@ -21,6 +23,11 @@ public class RxTest {
     public static void main(String[] args) {
         Lg.level(Lg.MORE);
         Lg.d("in");
+
+        final File file = new File(".test");
+        Lg.d("%s- --", file.getAbsolutePath());
+        file.renameTo(new File(".aa"));
+        Lg.d("as_ %s", file.getAbsolutePath());
 
         @NonNull final Disposable dis = Observable.just(2)
                 .map(new Function<Integer, Integer>() {
