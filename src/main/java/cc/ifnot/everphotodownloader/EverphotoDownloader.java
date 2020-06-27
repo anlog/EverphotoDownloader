@@ -119,7 +119,7 @@ public class EverphotoDownloader {
                     outDir = "out";
                 }
 
-                String threadsValue = cmd.getOptionValue("o");
+                String threadsValue = cmd.getOptionValue("t");
                 threads = Runtime.getRuntime()
                         .availableProcessors() + 1;
                 if (threadsValue == null || threadsValue.length() == 0) {

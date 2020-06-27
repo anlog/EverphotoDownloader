@@ -506,7 +506,7 @@ public enum EverPhoto {
                 }
             } else {
                 Lg.w("download failed <D:%s-E:%s-L:%s/%s>: server : %s - %s",
-                        index.get(), err.get(), local.get(), all.get(), res.code(),
+                        index.get(), err.incrementAndGet(), local.get(), all.get(), res.code(),
                         new Gson().fromJson(Objects.requireNonNull(res.body()).string(),
                                 Base.class).toString());
                 errfs.write(String.format("%s;%s;%s;%s;%s\n",
@@ -520,11 +520,11 @@ public enum EverPhoto {
             e.printStackTrace();
             if (f != null) {
                 Lg.w("download <D:%s-E:%s-L:%s/%s> df parse error: %s for %s; delete it",
-                        index.get(), err.get(), local.get(), all.get(), taken, f.getAbsolutePath());
+                        index.get(), err.incrementAndGet(), local.get(), all.get(), taken, f.getAbsolutePath());
                 f.delete();
             } else {
                 Lg.w("download <D:%s-E:%s-L:%s/%s> df parse error: %s file is null",
-                        index.get(), err.get(), local.get(), all.get(), taken);
+                        index.get(), err.incrementAndGet(), local.get(), all.get(), taken);
             }
             errfs.write(String.format("%s;%s;%s;%s;%s\n",
                     "df parse", f == null ? "null" : f.getName(),
@@ -533,7 +533,7 @@ public enum EverPhoto {
         } catch (NoSuchAlgorithmException | IOException e) {
             e.printStackTrace();
             Lg.w("download <D:%s-E:%s-L:%s/%s> io error when download %s; delete it",
-                    index.get(), err.get(), local.get(), all.get(), f.getAbsolutePath());
+                    index.get(), err.incrementAndGet(), local.get(), all.get(), f.getAbsolutePath());
             f.delete();
             errfs.write(String.format("%s;%s;%s;%s;%s\n",
                     "io error", f.getName(),
