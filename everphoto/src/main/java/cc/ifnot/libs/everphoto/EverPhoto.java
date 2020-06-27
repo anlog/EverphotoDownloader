@@ -111,14 +111,27 @@ public enum EverPhoto {
     String smsCode;
     String out;
     boolean verbose;
-
     AtomicInteger all = new AtomicInteger(0);
     AtomicInteger index = new AtomicInteger(0);
+    AtomicInteger local = new AtomicInteger(0);
+    AtomicInteger err = new AtomicInteger(0);
     Map<Long, AtomicInteger> refs = Collections.synchronizedMap(new HashMap<>());
+    private boolean c;
+    private boolean e;
     private @NonNull Scheduler downloadSchedulers = Schedulers.from(
             Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() + 1));
     private FileOutputStream dfs;
     private FileOutputStream errfs;
+
+    public EverPhoto setCheckLocal(boolean c) {
+        this.c = c;
+        return this;
+    }
+
+    public EverPhoto setDownlocalErrOnly(boolean e) {
+        this.e = e;
+        return this;
+    }
 
     public EverPhoto setMobile(String mobile) {
         this.mobile = mobile;
@@ -361,6 +374,13 @@ public enum EverPhoto {
 
                                             Lg.d("out file is %s", f.getAbsolutePath());
                                             if (f.exists()) {
+                                                if (!c) {
+                                                    Lg.d("skipped: <%s> local check is not enabled; default to pass", local.incrementAndGet());
+                                                    dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), "local",
+                                                            i.getMd5(), i.getId(), i.getSource_path()).getBytes());
+                                                    return String.format("%s(md5: %s) of %s(md5: %s) exists, skipped",
+                                                            f.getAbsolutePath(), i.getMd5(), url, i.getMd5());
+                                                }
                                                 Lg.w("f - %s exists", f.getAbsolutePath());
                                                 final MessageDigest md5 = MessageDigest.getInstance("md5");
                                                 try (FileInputStream fis = new FileInputStream(f)) {
@@ -375,7 +395,7 @@ public enum EverPhoto {
                                                     if (md5s.equalsIgnoreCase(i.getMd5())) {
                                                         dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
                                                                 md5s, i.getId(), i.getSource_path()).getBytes());
-                                                        Lg.w("download task: %s md5 match  , skip download", all.get());
+                                                        Lg.w("skipped <%s> local md5 match  , skip download", local.incrementAndGet());
                                                         return String.format("%s(md5: %s) of %s(md5: %s) is already downloaded",
                                                                 f.getAbsolutePath(), md5s, url, i.getMd5());
                                                     } else {
@@ -415,12 +435,12 @@ public enum EverPhoto {
                                                     fos.flush();
                                                     dfs.write(String.format("%s;%s;%s;%s;%s\n", f.getName(), count,
                                                             i.getMd5(), i.getId(), i.getSource_path()).getBytes());
-                                                    Lg.w("download <%s/%s> (%s bytes) file[%s] done",
-                                                            index.get(), all.get(), count, f.getName());
+                                                    Lg.w("download <D:%s-E:%s-L:%s/%s> (%s bytes) file[%s] done",
+                                                            index.get(), err.get(), local.get(), all.get(), count, f.getName());
                                                 }
                                             } else {
-                                                Lg.w("download failed <%s/%s>: server : %s - %s",
-                                                        index.get(), all.get(), res.code(),
+                                                Lg.w("download failed <D:%s-E:%s-L:%s/%s>: server : %s - %s",
+                                                        index.get(), err.get(), local.get(), all.get(), res.code(),
                                                         new Gson().fromJson(Objects.requireNonNull(res.body()).string(),
                                                                 Base.class).toString());
                                                 errfs.write(String.format("%s;%s;%s;%s;%s\n",
@@ -433,12 +453,12 @@ public enum EverPhoto {
                                         } catch (ParseException e) {
                                             e.printStackTrace();
                                             if (f != null) {
-                                                Lg.w("download <%s/%s> df parse error: %s for %s; delete it",
-                                                        index.get(), all.get(), taken, f.getAbsolutePath());
+                                                Lg.w("download <D:%s-E:%s-L:%s/%s> df parse error: %s for %s; delete it",
+                                                        index.get(), err.get(), local.get(), all.get(), taken, f.getAbsolutePath());
                                                 f.delete();
                                             } else {
-                                                Lg.w("download <%s/%s> df parse error: %s file is null",
-                                                        index.get(), all.get(), taken);
+                                                Lg.w("download <D:%s-E:%s-L:%s/%s> df parse error: %s file is null",
+                                                        index.get(), err.get(), local.get(), all.get(), taken);
                                             }
                                             errfs.write(String.format("%s;%s;%s;%s;%s\n",
                                                     "df parse", f == null ? "null" : f.getName(),
@@ -446,8 +466,8 @@ public enum EverPhoto {
                                             return e.getMessage() == null ? e.getMessage() : "exception throw";
                                         } catch (NoSuchAlgorithmException | IOException e) {
                                             e.printStackTrace();
-                                            Lg.w("download <%s/%s> io error when download %s; delete it",
-                                                    index.get(), all.get(), f.getAbsolutePath());
+                                            Lg.w("download <D:%s-E:%s-L:%s/%s> io error when download %s; delete it",
+                                                    index.get(), err.get(), local.get(), all.get(), f.getAbsolutePath());
                                             f.delete();
                                             errfs.write(String.format("%s;%s;%s;%s;%s\n",
                                                     "io error", f.getName(),
@@ -459,7 +479,6 @@ public enum EverPhoto {
                     }
                 }).observeOn(Schedulers.io());
     }
-
 
     private static class DownloadBena {
 

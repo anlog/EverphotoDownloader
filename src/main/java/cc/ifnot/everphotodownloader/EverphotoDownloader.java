@@ -30,6 +30,9 @@ public class EverphotoDownloader {
         options.addOption("V", "version", false, "show version");
         options.addOption("v", "verbose", false, "verbose");
 
+        options.addOption("c", "check", false, "check local md5 or not");
+        options.addOption("e", "error", false, "download error only, file list in out/.err");
+
         final Option user = Option.builder("u").longOpt("user")
                 .argName("username").desc("username mostly phone num")
                 .hasArg(true).optionalArg(false).build();
@@ -88,20 +91,27 @@ public class EverphotoDownloader {
                     verbose = true;
                 }
 
+                boolean c = cmd.hasOption("c");
+                boolean e = cmd.hasOption("e");
+
                 mobile = cmd.getOptionValue("u");
                 if (mobile == null || mobile.length() == 0) {
-                    Lg.e("user of %s is invalid", mobile);
-                    printHelp();
-                    return;
+                    if (!e) {
+                        Lg.e("user of %s is invalid", mobile);
+                        printHelp();
+                        return;
+                    }
                 }
                 password = cmd.getOptionValue("p");
                 smsCode = cmd.getOptionValue("s");
 
                 if ((password == null || password.length() == 0) &&
                         (smsCode == null || smsCode.length() == 0)) {
-                    Lg.e("make sure password or sms code is provided");
-                    printHelp();
-                    return;
+                    if (!e) {
+                        Lg.e("make sure password or sms code is provided");
+                        printHelp();
+                        return;
+                    }
                 }
                 outDir = cmd.getOptionValue("o");
                 if (outDir == null || outDir.length() == 0) {
@@ -128,6 +138,8 @@ public class EverphotoDownloader {
                         .setOut(outDir)
                         .setThreadCount(threads)
                         .setSmsCode(smsCode)
+                        .setCheckLocal(c)
+                        .setDownlocalErrOnly(e)
                         .doDownload().observeOn(Schedulers.io())
                         .subscribe(s -> {
                                     Lg.d("ED: %s", s);
@@ -140,8 +152,8 @@ public class EverphotoDownloader {
                 while (!disposable.isDisposed()) {
                     try {
                         latch.await();
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
+                    } catch (InterruptedException ex) {
+                        ex.printStackTrace();
                     } finally {
                         if (!disposable.isDisposed()) {
                             ThreadGroup currentGroup =
@@ -154,7 +166,7 @@ public class EverphotoDownloader {
                                         lstThreads[i].getName().contains("pool")) {
                                     try {
                                         lstThreads[i].join();
-                                    } catch (InterruptedException e) {
+                                    } catch (InterruptedException ex) {
                                     }
                                 }
                             }
