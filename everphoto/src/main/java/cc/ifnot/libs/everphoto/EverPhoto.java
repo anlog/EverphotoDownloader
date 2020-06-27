@@ -65,6 +65,7 @@ public enum EverPhoto {
     private static final ThreadLocal<SimpleDateFormat> threadLocal = new
             ThreadLocal<SimpleDateFormat>();
     private static final int BUF_SIZE = 1024 * 1024;
+    static String out;
     private static EverPhotoService evs;
     private static String token;
     private static OkHttpClient okHttpClient;
@@ -91,15 +92,24 @@ public enum EverPhoto {
                         ch.put("device_id", "1046385102960840");
                         ch.put("x-device-uuid", "3d9327b9-7fec-4e1c-a963-4730b5a31a68");
                         ch.put("x-request-uuid", UUID.randomUUID().toString());
-                        if (!original.url().encodedPath().contains("auth") ||
-                                original.headers().toMultimap().get("authorization").size() == 0) {
-                            ch.put("authorization", "Bearer " + token);
+
+                        if (!original.url().encodedPath().contains("auth")) {
+                            final List<String> authorization = original.headers().toMultimap().get("authorization");
+                            if (authorization != null && authorization.size() > 0) {
+                                ch.put("authorization", authorization.get(0));
+                            } else {
+                                ch.put("authorization", "Bearer " + token);
+                            }
                         }
                         Request.Builder requestBuilder = original.newBuilder()
                                 .headers(Headers.of(ch));
 
                         Request request = requestBuilder.build();
-                        return chain.proceed(request);
+                        final Response response = chain.proceed(request);
+                        if (response.code() > 400 && response.code() < 500) {
+                            new File(out, ".token").delete();
+                        }
+                        return response;
                     }
                 }).addInterceptor(new HttpLoggingInterceptor()
                         .setLevel(HttpLoggingInterceptor.Level.NONE))
@@ -116,7 +126,6 @@ public enum EverPhoto {
     String mobile;
     String password;
     String smsCode;
-    String out;
     boolean verbose;
     AtomicInteger all = new AtomicInteger(0);
     AtomicInteger index = new AtomicInteger(0);
@@ -197,15 +206,22 @@ public enum EverPhoto {
 
                         final File errF = new File(out, ".err");
                         if (errF.isFile()) {
-                            final File dest = new File(out, ".err_to_download");
-                            errF.renameTo(dest);
                             try (final BufferedReader br =
-                                         new BufferedReader(new InputStreamReader(new FileInputStream(dest)))) {
+                                         new BufferedReader(new InputStreamReader(new FileInputStream(errF)))) {
+                                dfs = new FileOutputStream(new File(out, ".err_download"));
+                                dfs.write(("## " + new Date().toString()).getBytes());
+                                dfs.write('\n');
+
+                                errfs = new FileOutputStream(new File(out, ".err_err"));
+
+                                Lg.d("read err file");
                                 @NonNull final URITemp uriTemp = evs.settings().blockingSingle();
                                 final String origin = uriTemp.getData().getUri_template().getOrigin();
+                                Lg.d("evs settings get origin : %s", origin);
 
                                 String line;
                                 while ((line = br.readLine()) != null) {
+                                    Lg.d("read err file line: %s", line);
                                     //                                            io error;VID_20200516_135322.mp4;79815752e8dfd8897479cc593f977a7c;6827619680589447694;android://sdcard/DCIM/Camera/VID_20200516_135237.mp4
                                     final String[] strings = line.split(";");
                                     if (strings[1] != null && strings[3] != null) {
@@ -213,7 +229,8 @@ public enum EverPhoto {
                                         final File f = new File(out, paths[1].substring(0, 3) + "/" + paths[1].substring(4, 5)
                                                 + "/" + strings[1]);
 
-                                        MediaInfo info = evs.info(s, Long.parseLong(strings[3])).execute().body();
+                                        MediaInfo info = evs.info("Bearer " + s, Long.parseLong(strings[3])).execute().body();
+                                        Lg.d("evs get info: %s", info.toString());
                                         if (info != null && origin != null) {
                                             Lg.d("download(all: %s) media: %s", all.incrementAndGet(), info.getData().getId());
                                             observer.onNext(new DownloadBean(f, info.getData(), origin));
@@ -225,6 +242,9 @@ public enum EverPhoto {
                                 ex.printStackTrace();
                                 observer.onError(ex);
                             }
+                        } else {
+                            Lg.d(".err file not file");
+                            observer.onError(new IOException(".err file not file"));
                         }
                     }).flatMap((Function<DownloadBean, ObservableSource<DownloadBean>>) downloadBean
                             -> Observable.just(downloadBean).subscribeOn(Schedulers.computation())

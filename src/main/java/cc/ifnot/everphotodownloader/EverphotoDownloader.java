@@ -156,23 +156,6 @@ public class EverphotoDownloader {
                         latch.await();
                     } catch (InterruptedException ex) {
                         ex.printStackTrace();
-                    } finally {
-                        if (!disposable.isDisposed()) {
-                            ThreadGroup currentGroup =
-                                    Thread.currentThread().getThreadGroup();
-                            int noThreads = currentGroup.activeCount();
-                            Thread[] lstThreads = new Thread[noThreads];
-                            currentGroup.enumerate(lstThreads);
-                            for (int i = 0; i < noThreads; i++) {
-                                if (lstThreads[i] != null &&
-                                        lstThreads[i].getName().contains("pool")) {
-                                    try {
-                                        lstThreads[i].join();
-                                    } catch (InterruptedException ex) {
-                                    }
-                                }
-                            }
-                        }
                     }
                     //wait
                 }

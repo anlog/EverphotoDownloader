@@ -11,4 +11,11 @@ public class MediaInfo extends Base {
     public Media.MediaList getData() {
         return data;
     }
+
+    @Override
+    public String toString() {
+        return "MediaInfo{" +
+                "data=" + data +
+                '}';
+    }
 }
